@@ -5,24 +5,41 @@
  */
 
 import * as p from 'path';
-import {writeFileSync} from 'fs';
-import {sync as mkdirpSync} from 'mkdirp';
+import {
+    writeFileSync,
+    readFileSync
+} from 'fs';
+import {
+    sync as mkdirpSync
+} from 'mkdirp';
 import printICUMessage from './print-icu-message';
 
 const COMPONENT_NAMES = [
     'FormattedMessage',
     'FormattedHTMLMessage',
+    'Msg'
 ];
 
 const FUNCTION_NAMES = [
     'defineMessages',
+    'msg'
 ];
 
 const DESCRIPTOR_PROPS = new Set(['id', 'description', 'defaultMessage']);
 
-export default function () {
-    function getModuleSourceName(opts) {
-        return opts.moduleSourceName || 'react-intl';
+const INVALID_VALUE = Symbol();
+
+export default function() {
+    function getModuleSourceNames(opts) {
+        return opts.moduleSourceNames || ['react-intl'];
+    }
+
+    function getComponentNames(opts) {
+        return opts.componentNames || COMPONENT_NAMES;
+    }
+
+    function getFunctionNames(opts) {
+        return opts.functionNames || FUNCTION_NAMES;
     }
 
     function getMessageDescriptorKey(path) {
@@ -35,9 +52,11 @@ export default function () {
             return evaluated.value;
         }
 
-        throw path.buildCodeFrameError(
-            '[React Intl] Messages must be statically evaluate-able for extraction.'
-        );
+        console.warn(path.buildCodeFrameError(
+            '[React Intl] Skipping, messages must be statically evaluate-able for extraction.'
+        ));
+
+        return INVALID_VALUE;
     }
 
     function getMessageDescriptorValue(path) {
@@ -50,13 +69,17 @@ export default function () {
             return evaluated.value;
         }
 
-        throw path.buildCodeFrameError(
-            '[React Intl] Messages must be statically evaluate-able for extraction.'
-        );
+        console.warn(path.buildCodeFrameError(
+            '[React Intl] Skipping, messages must be statically evaluate-able for extraction.'
+        ));
+
+        return INVALID_VALUE;
     }
 
     function createMessageDescriptor(propPaths, options = {}) {
-        const {isJSXSource = false} = options;
+        const {
+            isJSXSource = false
+        } = options;
 
         return propPaths.reduce((hash, [keyPath, valuePath]) => {
             let key = getMessageDescriptorKey(keyPath);
@@ -65,7 +88,9 @@ export default function () {
                 return hash;
             }
 
-            let value = getMessageDescriptorValue(valuePath).trim();
+            let value = getMessageDescriptorValue(valuePath);
+
+            if (value === INVALID_VALUE) return hash;
 
             if (key === 'defaultMessage') {
                 try {
@@ -98,8 +123,15 @@ export default function () {
         }, {});
     }
 
-    function storeMessage({id, description, defaultMessage}, path, state) {
-        const {opts, reactIntl} = state;
+    function storeMessage({
+        id,
+        description,
+        defaultMessage
+    }, path, state) {
+        const {
+            opts,
+            reactIntl
+        } = state;
 
         if (!(id && defaultMessage)) {
             throw path.buildCodeFrameError(
@@ -126,16 +158,34 @@ export default function () {
             );
         }
 
-        reactIntl.messages.set(id, {id, description, defaultMessage});
+        reactIntl.messages.set(id, {
+            id,
+            description,
+            defaultMessage
+        });
     }
 
-    function referencesImport(path, mod, importedNames) {
+    function referencesImport(path, mods, importedNames) {
         if (!(path.isIdentifier() || path.isJSXIdentifier())) {
             return false;
         }
 
-        return importedNames.some((name) => path.referencesImport(mod, name));
+        return importedNames.some((name) => mods.some((mod) => path.referencesImport(mod, name)));
     }
+
+    let references;
+    let resourceFiles;
+
+    // It is not always the case that `state.opts` is defined while traversing.
+    // Did not manage to find out the cause.
+    const loadRefs = (state) => {
+        if (!references && state.opts.resourceFiles) {
+            references = state.opts.resourceFiles.map((path) => JSON.parse(readFileSync(path)));
+            resourceFiles = state.opts.resourceFiles;
+        }
+
+        return references;
+    };
 
     return {
         visitor: {
@@ -147,11 +197,33 @@ export default function () {
                 },
 
                 exit(path, state) {
-                    const {file, opts, reactIntl} = state;
-                    const {basename, filename}    = file.opts;
+                    const {
+                        file,
+                        opts,
+                        reactIntl,
+                    } = state;
+                    const {
+                        basename,
+                        filename
+                    } = file.opts;
 
                     let descriptors = [...reactIntl.messages.values()];
-                    file.metadata['react-intl'] = {messages: descriptors};
+                    file.metadata['react-intl'] = {
+                        messages: descriptors
+                    };
+
+                    const refs = loadRefs(state);
+                    // Here we check if the keys that are extracted from the 
+                    // source code exist in the reference files (i.e. translation jsons)
+                    if (refs) {
+                        descriptors.forEach((descriptor) => {
+                            refs.forEach((ref, index) => {
+                                if (!ref.hasOwnProperty(descriptor.id)) {
+                                    file.log.warn(`[React Intl] Resource ${descriptor.id} missing from ${resourceFiles[index]}.`);
+                                }
+                            });
+                        });
+                    }
 
                     if (opts.messagesDir && descriptors.length > 0) {
                         // Make sure the relative path is "absolute" before
@@ -176,12 +248,16 @@ export default function () {
             },
 
             JSXOpeningElement(path, state) {
-                const {file, opts}     = state;
-                const moduleSourceName = getModuleSourceName(opts);
+                const {
+                    file,
+                    opts
+                } = state;
+
+                const moduleSourceNames = getModuleSourceNames(opts);
 
                 let name = path.get('name');
 
-                if (name.referencesImport(moduleSourceName, 'FormattedPlural')) {
+                if (referencesImport(name, moduleSourceNames, ['FormattedPlural'])) {
                     file.log.warn(
                         `[React Intl] Line ${path.node.loc.start.line}: ` +
                         'Default messages are not extracted from ' +
@@ -191,7 +267,7 @@ export default function () {
                     return;
                 }
 
-                if (referencesImport(name, moduleSourceName, COMPONENT_NAMES)) {
+                if (referencesImport(name, moduleSourceNames, COMPONENT_NAMES)) {
                     let attributes = path.get('attributes')
                         .filter((attr) => attr.isJSXAttribute());
 
@@ -199,8 +275,9 @@ export default function () {
                         attributes.map((attr) => [
                             attr.get('name'),
                             attr.get('value'),
-                        ]),
-                        {isJSXSource: true}
+                        ]), {
+                            isJSXSource: true
+                        }
                     );
 
                     // In order for a default message to be extracted when
@@ -216,8 +293,9 @@ export default function () {
                 }
             },
 
+            // FIXME this does not seem to find `this.msg` calls. Investigate.
             CallExpression(path, state) {
-                const moduleSourceName = getModuleSourceName(state.opts);
+                const moduleSourceNames = getModuleSourceNames(state.opts);
                 const callee = path.get('callee');
 
                 function assertObjectExpression(node) {
@@ -252,11 +330,12 @@ export default function () {
                     storeMessage(descriptor, path, state);
                 }
 
-                if (referencesImport(callee, moduleSourceName, FUNCTION_NAMES)) {
-                    let messagesObj = path.get('arguments')[0];
-
+                if (referencesImport(callee, moduleSourceNames, FUNCTION_NAMES)) {
+                    const args = path.get('arguments');
+                    let messagesObj = args[0];
+                    // TODO here we need to discern whether the arguments are just
+                    // one object or are we using the `this.msg` convention.
                     assertObjectExpression(messagesObj);
-
                     messagesObj.get('properties')
                         .map((prop) => prop.get('value'))
                         .forEach(processMessageObject);
