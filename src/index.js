@@ -30,6 +30,8 @@ const DESCRIPTOR_PROPS = new Set(['id', 'description', 'defaultMessage']);
 
 const INVALID_VALUE = Symbol();
 
+const fileNameFromPath = ({ hub: { file: { opts: { filename } } } }) => filename;
+
 export default function() {
     function getModuleSourceNames(opts) {
         return opts.moduleSourceNames || ['react-intl'];
@@ -54,7 +56,7 @@ export default function() {
         }
 
         console.warn(path.buildCodeFrameError(
-            '[React Intl] Skipping, messages must be statically evaluate-able for extraction.'
+            '[React Intl] Skipping key, messages must be statically evaluate-able for extraction. See ' + fileNameFromPath(path)
         ));
 
         return INVALID_VALUE;
@@ -71,7 +73,7 @@ export default function() {
         }
 
         console.warn(path.buildCodeFrameError(
-            '[React Intl] Skipping, messages must be statically evaluate-able for extraction.'
+            '[React Intl] Skipping value, messages must be statically evaluate-able for extraction. See ' + fileNameFromPath(path)
         ));
 
         return INVALID_VALUE;
@@ -91,7 +93,9 @@ export default function() {
 
             let value = getMessageDescriptorValue(valuePath);
 
-            if (value === INVALID_VALUE) return hash;
+            if (value === INVALID_VALUE) { 
+                return hash;
+            }
 
             if (key === 'defaultMessage') {
                 try {
