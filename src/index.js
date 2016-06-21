@@ -17,12 +17,13 @@ import printICUMessage from './print-icu-message';
 const COMPONENT_NAMES = [
     'FormattedMessage',
     'FormattedHTMLMessage',
-    'Msg'
+    'Msg',
+    'HtmlMsg'
 ];
 
 const FUNCTION_NAMES = [
     'defineMessages',
-    'msg'
+    'msgs'
 ];
 
 const DESCRIPTOR_PROPS = new Set(['id', 'description', 'defaultMessage']);
@@ -173,20 +174,6 @@ export default function() {
         return importedNames.some((name) => mods.some((mod) => path.referencesImport(mod, name)));
     }
 
-    let references;
-    let resourceFiles;
-
-    // It is not always the case that `state.opts` is defined while traversing.
-    // Did not manage to find out the cause.
-    const loadRefs = (state) => {
-        if (!references && state.opts.resourceFiles) {
-            references = state.opts.resourceFiles.map((path) => JSON.parse(readFileSync(path)));
-            resourceFiles = state.opts.resourceFiles;
-        }
-
-        return references;
-    };
-
     return {
         visitor: {
             Program: {
@@ -211,19 +198,6 @@ export default function() {
                     file.metadata['react-intl'] = {
                         messages: descriptors
                     };
-
-                    const refs = loadRefs(state);
-                    // Here we check if the keys that are extracted from the 
-                    // source code exist in the reference files (i.e. translation jsons)
-                    if (refs) {
-                        descriptors.forEach((descriptor) => {
-                            refs.forEach((ref, index) => {
-                                if (!ref.hasOwnProperty(descriptor.id)) {
-                                    file.log.warn(`[React Intl] Resource ${descriptor.id} missing from ${resourceFiles[index]}.`);
-                                }
-                            });
-                        });
-                    }
 
                     if (opts.messagesDir && descriptors.length > 0) {
                         // Make sure the relative path is "absolute" before
